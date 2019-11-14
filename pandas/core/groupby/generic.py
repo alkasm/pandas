@@ -266,7 +266,7 @@ class SeriesGroupBy(GroupBy):
                 result = self._aggregate_named(func, *args, **kwargs)
 
             index = Index(sorted(result), name=self.grouper.names[0])
-            ret = Series(result, index=index)
+            ret = self.obj._constructor(result, index=index)
 
         if not self.as_index:  # pragma: no cover
             print("Warning, ignoring as_index=True")
@@ -335,19 +335,19 @@ class SeriesGroupBy(GroupBy):
             if _level:
                 return results
 
-        return DataFrame(results, columns=columns)
+        return self.obj._constructor_expanddim(results, columns=columns)
 
     def _wrap_series_output(self, output, index, names=None):
         """ common agg/transform wrapping logic """
         output = output[self._selection_name]
 
         if names is not None:
-            return DataFrame(output, index=index, columns=names)
+            return self.obj._constructor_expanddim(output, index=index, columns=names)
         else:
             name = self._selection_name
             if name is None:
                 name = self._selected_obj.name
-            return Series(output, index=index, name=name)
+            return self.obj._constructor(output, index=index, name=name)
 
     def _wrap_aggregated_output(self, output, names=None):
         result = self._wrap_series_output(
@@ -363,7 +363,7 @@ class SeriesGroupBy(GroupBy):
     def _wrap_applied_output(self, keys, values, not_indexed_same=False):
         if len(keys) == 0:
             # GH #6265
-            return Series([], name=self._selection_name, index=keys)
+            return self.obj._constructor([], name=self._selection_name, index=keys)
 
         def _get_index() -> Index:
             if self.grouper.nkeys > 1:
@@ -375,7 +375,7 @@ class SeriesGroupBy(GroupBy):
         if isinstance(values[0], dict):
             # GH #823 #24880
             index = _get_index()
-            result = self._reindex_output(DataFrame(values, index=index))
+            result = self._reindex_output(self.obj._constructor_expanddim(values, index=index))
             # if self.observed is False,
             # keep all-NaN rows created while re-indexing
             result = result.stack(dropna=self.observed)
@@ -389,7 +389,7 @@ class SeriesGroupBy(GroupBy):
             return self._concat_objects(keys, values, not_indexed_same=not_indexed_same)
         else:
             # GH #6265 #24880
-            result = Series(data=values, index=_get_index(), name=self._selection_name)
+            result = self.obj._constructor(data=values, index=_get_index(), name=self._selection_name)
             return self._reindex_output(result)
 
     def _aggregate_named(self, func, *args, **kwargs):
@@ -445,7 +445,7 @@ class SeriesGroupBy(GroupBy):
 
             result = concat(results).sort_index()
         else:
-            result = Series()
+            result = self.obj._constructor()
 
         # we will only try to coerce the result type if
         # we have a numeric dtype, as these are *always* udfs
@@ -471,7 +471,7 @@ class SeriesGroupBy(GroupBy):
         out = algorithms.take_1d(func()._values, ids)
         if cast:
             out = self._try_cast(out, self.obj)
-        return Series(out, index=self.obj.index, name=self.obj.name)
+        return self.obj._constructor(out, index=self.obj.index, name=self.obj.name)
 
     def filter(self, func, dropna=True, *args, **kwargs):
         """
@@ -584,7 +584,7 @@ class SeriesGroupBy(GroupBy):
             res, out = np.zeros(len(ri), dtype=out.dtype), res
             res[ids[idx]] = out
 
-        return Series(res, index=ri, name=self._selection_name)
+        return self.obj._constructor(res, index=ri, name=self._selection_name)
 
     @Appender(Series.describe.__doc__)
     def describe(self, **kwargs):
@@ -685,7 +685,7 @@ class SeriesGroupBy(GroupBy):
 
             if is_integer_dtype(out):
                 out = ensure_int64(out)
-            return Series(out, index=mi, name=self._selection_name)
+            return self.obj._constructor(out, index=mi, name=self._selection_name)
 
         # for compat. with libgroupby.value_counts need to ensure every
         # bin is present at every index level, null filled with zeros
@@ -717,7 +717,7 @@ class SeriesGroupBy(GroupBy):
 
         if is_integer_dtype(out):
             out = ensure_int64(out)
-        return Series(out, index=mi, name=self._selection_name)
+        return self.obj._constructor(out, index=mi, name=self._selection_name)
 
     def count(self) -> Series:
         """
@@ -736,7 +736,7 @@ class SeriesGroupBy(GroupBy):
         minlength = ngroups or 0
         out = np.bincount(ids[mask], minlength=minlength)
 
-        return Series(
+        return self.obj._constructor(
             out,
             index=self.grouper.result_index,
             name=self._selection_name,
@@ -1117,7 +1117,7 @@ class DataFrameGroupBy(GroupBy):
             if not len(result_columns) and errors is not None:
                 raise errors
 
-        return DataFrame(result, columns=result_columns)
+        return self.obj._constructor(result, columns=result_columns)
 
     def _decide_output_index(self, output, labels):
         if len(output) == len(labels):
@@ -1132,7 +1132,7 @@ class DataFrameGroupBy(GroupBy):
 
     def _wrap_applied_output(self, keys, values, not_indexed_same=False):
         if len(keys) == 0:
-            return DataFrame(index=keys)
+            return self.obj._constructor(index=keys)
 
         key_names = self.grouper.names
 
@@ -1148,7 +1148,7 @@ class DataFrameGroupBy(GroupBy):
         if v is None:
             # GH9684. If all values are None, then this will throw an error.
             # We'd prefer it return an empty dataframe.
-            return DataFrame()
+            return self.obj._constructor()
         elif isinstance(v, DataFrame):
             return self._concat_objects(keys, values, not_indexed_same=not_indexed_same)
         elif self.grouper.groupings is not None:
@@ -1177,7 +1177,7 @@ class DataFrameGroupBy(GroupBy):
             # make Nones an empty object
             v = first_not_none(values)
             if v is None:
-                return DataFrame()
+                return self.obj._constructor()
             elif isinstance(v, NDFrame):
                 values = [
                     x if x is not None else v._constructor(**v._construct_axes_dict())
@@ -1242,7 +1242,7 @@ class DataFrameGroupBy(GroupBy):
                         or isinstance(key_index, MultiIndex)
                     ):
                         stacked_values = np.vstack([np.asarray(v) for v in values])
-                        result = DataFrame(
+                        result = self.obj._constructor(
                             stacked_values, index=key_index, columns=index
                         )
                     else:
@@ -1259,7 +1259,7 @@ class DataFrameGroupBy(GroupBy):
                         result.columns = index
                 elif isinstance(v, ABCSeries):
                     stacked_values = np.vstack([np.asarray(v) for v in values])
-                    result = DataFrame(
+                    result = self.obj._constructor(
                         stacked_values.T, index=v.index, columns=key_index
                     )
                 else:
@@ -1267,7 +1267,7 @@ class DataFrameGroupBy(GroupBy):
                     #  fall through to the outer else clause
                     # TODO: sure this is right?  we used to do this
                     #  after raising AttributeError above
-                    return Series(values, index=key_index, name=self._selection_name)
+                    return self.obj._constructor_sliced(values, index=key_index, name=self._selection_name)
 
                 # if we have date/time like in the original, then coerce dates
                 # as we are stacking can easily have object dtypes here
@@ -1286,7 +1286,7 @@ class DataFrameGroupBy(GroupBy):
                 # self._selection_name not passed through to Series as the
                 # result should not take the name of original selection
                 # of columns
-                return Series(values, index=key_index)._convert(
+                return self.obj._constructor_sliced(values, index=key_index)._convert(
                     datetime=True, coerce=should_coerce
                 )
 
@@ -1330,7 +1330,7 @@ class DataFrameGroupBy(GroupBy):
                     r.columns = group.columns
                     r.index = group.index
                 else:
-                    r = DataFrame(
+                    r = self.obj._constructor(
                         np.concatenate([res.values] * len(group.index)).reshape(
                             group.shape
                         ),
@@ -1400,7 +1400,7 @@ class DataFrameGroupBy(GroupBy):
                 res = self._try_cast(res, obj.iloc[:, i])
             output.append(res)
 
-        return DataFrame._from_arrays(output, columns=result.columns, index=obj.index)
+        return self.obj._constructor._from_arrays(output, columns=result.columns, index=obj.index)
 
     def _define_paths(self, func, *args, **kwargs):
         if isinstance(func, str):
@@ -1462,7 +1462,7 @@ class DataFrameGroupBy(GroupBy):
         if len(output) < len(obj.columns):
             columns = columns.take(inds)
 
-        return DataFrame(output, index=obj.index, columns=columns)
+        return self.obj._constructor(output, index=obj.index, columns=columns)
 
     def filter(self, func, dropna=True, *args, **kwargs):
         """
@@ -1566,9 +1566,9 @@ class DataFrameGroupBy(GroupBy):
         result_index = self.grouper.levels[0]
 
         if self.axis == 0:
-            return DataFrame(result, index=obj.columns, columns=result_index).T
+            return self.obj._constructor(result, index=obj.columns, columns=result_index).T
         else:
-            return DataFrame(result, index=obj.index, columns=result_index)
+            return self.obj._constructor(result, index=obj.index, columns=result_index)
 
     def _get_data_to_aggregate(self):
         obj = self._obj_with_exclusions
@@ -1601,12 +1601,12 @@ class DataFrameGroupBy(GroupBy):
         output_keys = self._decide_output_index(output, agg_labels)
 
         if not self.as_index:
-            result = DataFrame(output, columns=output_keys)
+            result = self.obj._constructor(output, columns=output_keys)
             self._insert_inaxis_grouper_inplace(result)
             result = result._consolidate()
         else:
             index = self.grouper.result_index
-            result = DataFrame(output, index=index, columns=output_keys)
+            result = self.obj._constructor(output, index=index, columns=output_keys)
 
         if self.axis == 1:
             result = result.T
@@ -1614,20 +1614,20 @@ class DataFrameGroupBy(GroupBy):
         return self._reindex_output(result)._convert(datetime=True)
 
     def _wrap_transformed_output(self, output, names=None) -> DataFrame:
-        return DataFrame(output, index=self.obj.index)
+        return self.obj._constructor(output, index=self.obj.index)
 
     def _wrap_agged_blocks(self, items, blocks):
         if not self.as_index:
             index = np.arange(blocks[0].values.shape[-1])
             mgr = BlockManager(blocks, [items, index])
-            result = DataFrame(mgr)
+            result = self.obj._constructor(mgr)
 
             self._insert_inaxis_grouper_inplace(result)
             result = result._consolidate()
         else:
             index = self.grouper.result_index
             mgr = BlockManager(blocks, [items, index])
-            result = DataFrame(mgr)
+            result = self.obj._constructor(mgr)
 
         if self.axis == 1:
             result = result.T
